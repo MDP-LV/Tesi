@@ -1,0 +1,353 @@
+clc
+clear all
+close all
+
+
+format long
+
+
+[prezzi] = xlsread('db.xlsx');
+%aggiunto per prova
+rend = log(prezzi(2:end,:)./prezzi(1:end-1,:));  % rendimenti logaritmici
+[rig,numvar] = size(rend);
+
+
+% parameter setting
+lun_is = 10*21; % lunghezza in-sample 
+lun_os = 1*21; % lunghezza out-of-sample 
+
+
+pi_annuo = 6/1000; % rendimento annuale risk free asset
+pi = (2.5 + pi_annuo)^(1/252) - 1; % rendimento giornaliero risk free asset
+
+
+%settaggio per PSO 
+niter = 10; % numero iterazioni
+P = 2; % numero di particelle
+c1 = 1.49618; %coefficiente di accelerazione cognitivo individuale
+c2 = 1.49618; %coefficiente di accelerazione cognitivo sociale
+w = 0.7298; %peso d'inerzia
+epsilon1 = 1e-4; % parametro di penalità
+vmaxa = zeros(1,numvar);
+vmaxb = zeros(1,numvar);
+vmaxc = zeros(1,numvar);
+
+
+rip = 3; % numero di cicli
+
+
+num_p = 1e5; % numero di generazioni casuali
+alpha_p = 5/100; % intervallo di confidenza per ES
+
+
+%Input per portafoglio 
+C_ini = 1200; % capitale iniziale
+fix = 0.001; %costi fissi
+float = 1/1000; %costi variabili
+delta = 0.015*C_ini; %limite soglia di costo
+Kl = 2; %numero minimo di titoli detenibili
+Ku = 4; %numero massimo di titoli detenibili
+l = ones(1,numvar)*0.2; %percentuale minima di un unico titolo
+u = ones(1,numvar)*0.6; %percentuale massima di un unico titolo
+l(2) = 0.4
+l(4) = 0.2
+u(1) = 0.3
+u(3) = 0.03
+
+
+% inizializzazione 
+
+
+param_sta = zeros(numvar,4);
+
+
+
+num_rev = rig/(lun_is+lun_os);
+if rig-floor(num_rev)*(lun_is+lun_os) > lun_is
+    num_rev = ceil(num_rev);
+else
+    num_rev = floor(num_rev);
+end
+
+
+tic
+
+
+for rr = 1:num_rev
+    
+    sp = (rr-1)*(lun_is+lun_os);
+    rend_is = rend(sp+1:sp+lun_is,:);
+    if rr == num_rev
+        rend_os = rend(sp+lun_is+1:end,:);
+    else
+        rend_os = rend(sp+lun_is+1:sp+lun_is+lun_os,:);
+    end
+    
+    
+    for sta = 1:numvar % stima dei parametri stabili
+        stime = fitdist(rend_is(:,sta),'Stable');
+        param_sta(sta,1) = stime.alpha;
+        param_sta(sta,2) = stime.beta;
+        param_sta(sta,3) = stime.gam;
+        param_sta(sta,4) = stime.delta;
+    end
+    media = param_sta(:,4)'; % vettore dei valori attesi
+
+    
+    % inizializzazione PSO
+    
+    
+    vmaxx = zeros(1,numvar); % velocità max
+    x = rand(P,numvar); % portfolios
+    for lt = 1:numvar
+        x(:,lt) = x(:,lt)/sum(x(:,lt)); % vettore punti critici
+    end
+    
+    
+    vmaxa = zeros(1,numvar);
+    a = rand(P,numvar);
+    va = rand(P,numvar);
+    vmaxb = zeros(1,numvar);
+    b = rand(P,numvar);
+    vb = rand(P,numvar);
+    vmaxc = zeros(1,numvar);
+    c = rand(P,numvar);
+    vc = rand(P,numvar);
+    d = zeros(P,numvar); %matrice di supporto dei costi
+    
+    
+    vx = rand(P,numvar); % velocità
+    f = ones(P,1)*1.0e+015; % fitness
+
+    
+    % settaggio del problema di ottimizzazione
+    
+    
+    vinc_1 = zeros(P,1); % violazione vincolo di budget
+    vinc_2 = zeros(P,1); % violazione vincolo di rendimento
+    app_3 = zeros(P,numvar);
+    vinc_3 = zeros(P,1); %  violazione vincolo long-only-position
+    vinc_4 = zeros(P,1); %  violazione vincolo numero minimo di titoli 
+    vinc_5 = zeros(P,1); % violazione vincolo numero massimo di titoli 
+    app_6 = zeros(P,numvar);
+    vinc_6 = zeros(P,1); % violazione vincolo sulla percentuale minima
+    app_7 = zeros(1,numvar);
+    vinc_7 = zeros(P,1); %violazione vincolo sulla percentuale massima
+    app_8 = zeros(1,numvar);
+    vinc_8 = zeros(P,1); %vincolo che impone a=0 o a=1
+    app_9 = zeros(1,numvar);
+    vinc_9 = zeros(P,1); %vincolo che impone b > 0
+    app_10 = zeros(1,numvar);
+    vinc_10 = zeros(P,1); %vincolo che impone c >0
+    vinc_11 = zeros(P,1); %violazione vincolo sul supporto dei costi
+    
+    
+    pbx = [x f]; % personal best di ciascuna particella e fitness function 
+    pba = a; % personal best di ciascuna particella a 
+    pbb = b; % personal best di ciascuna particella b
+    pbc = c; % personal best di ciascuna particella c
+    
+    
+    pbstime = zeros(P,4); % parametri personal bests
+    gx = zeros(1,numvar+1); % global best + fitness value
+    ga = zeros(1,numvar); %global best a
+    gb = zeros(1,numvar); %global best b
+    gc = zeros(1,numvar); %global best c
+    
+    
+    gstime = zeros(1,4); % parametri global best
+    param_sta_swarm = zeros(P,4); % parametri popolazione
+
+   
+    for k = 1:niter
+ 
+        % 1) range velocità max
+        for i = 1:numvar
+            vmaxx(i) = abs(max(x(:,i)) - min(x(:,i)));
+            vmaxa(i) = abs(max(a(:,i)) - min(a(:,i)));
+            vmaxb(i) = abs(max(b(:,i)) - min(b(:,i)));
+            vmaxc(i) = abs(max(c(:,i)) - min(c(:,i)));
+        end
+    
+        % 2) fitness function
+        for p = 1:P
+            for i=1:numvar
+            d(p,i) = x(p,i)*a(p,i);
+            if rend_is(i)>=0;
+                b(p,i) = fix;
+                c(p,i) = 0;
+                
+            end
+            if rend_is(i)<0;
+                c(p,i) = fix;
+                b(p,i) = 0;
+            end
+            end
+            [rr k p]
+            
+            rend_p = rend_is*x(p,:)'; % in-sample rendimenti portfolio 
+            stime_p = fitdist(rend_p,'Stable');
+            param_sta_swarm(p,1) = stime_p.alpha;
+            param_sta_swarm(p,2) = stime_p.beta;
+            param_sta_swarm(p,3) = stime_p.gam;
+            param_sta_swarm(p,4) = stime_p.delta;
+            stable_p = random('Stable',stime_p.alpha,stime_p.beta,stime_p.gam,stime_p.delta,num_p,1);
+            stable_p = sort(stable_p);
+            var_port(p) = mean(stable_p(1:floor(num_p*alpha_p))); % ES      
+            med_port(p) = (x(p,:)*media' - pi); % rendimenti portfolio
+            vinc_1(p) = abs(sum(x(p,:)) - 1); %vincolo di budget
+            vinc_2(p) = max(0, -(x(p,:)*media' - pi)); %vincolo performance
+            for i = 1:numvar
+                app_3(p,i) = max(0,-x(p,i));
+            end
+            vinc_3(p) = sum(app_3(p,:)); %vincolo short sales
+            vinc_4(p) = max(0,Kl-sum(a(p,:))); %vincolo sul numero minimo 
+            vinc_5(p) = max(0,sum(a(p,:))-Ku); %vincolo sul numero massimo 
+            app_6(p,i) = max(0,l(i)*a(p,i)-x(p,i));
+            vinc_6(p) = sum(app_6(p,:));  %vincolo sulla percentuale minima 
+            app_7(p,i) = max(0,x(p,i)-u(i)*a(p,i));
+            vinc_7(p) = sum(app_7(p,:)); %vincolo sulla percentuale massima 
+            app_8(p,i) = abs(a(p,i)*(1-a(p,i)));
+            vinc_8(p) = sum(app_8(p,:)); %vincolo che impone a=0 o a=1
+            app_9(p,i) = max(0,-b(p,i));
+            vinc_9(p) = sum(app_9(p,:)); %vincolo che impone b>=0
+            app_10(p,i) = max(0,-c(p,i));
+            vinc_10(p) = sum(app_10(p,:)); %vincolo che impone c>=0
+            vinc_11(p) <= abs((sum(float*d(p,:))+sum((fix*a(p,:))-delta)));  
+            %#ok<VUNUS> vincolo sul costo
+            
+            
+        end
+        f = var_port + ((1/epsilon1)*(vinc_1+vinc_2+vinc_3+vinc_4+vinc_5+vinc_6+vinc_7+vinc_8+vinc_9+vinc_10+vinc_11));
+        
+        % 3) comparing fitness function to pbest
+        for p = 1:P
+            if f(p) < pbx(p,numvar+1)
+                pbx(p,numvar+1) = f(p);
+                pbstime(p,1) = param_sta_swarm(p,1); % alpha personal best
+                pbstime(p,2) = param_sta_swarm(p,2); % beta personal best
+                pbstime(p,3) = param_sta_swarm(p,3); % gam personal best
+                pbstime(p,4) = param_sta_swarm(p,4); % delta personal best
+                for i = 1:numvar
+                    pbx(p,i) = x(p,i);
+                    pba(p,i) = a(p,i);
+                    pbb(p,i) = b(p,i);
+                    pbc(p,i) = c(p,i);
+                end
+            end
+        end
+    
+        % 4) ricerca global best
+        [minimo,posizione] = min(pbx(:,numvar+1));
+        gx(numvar+1) = minimo;
+        gstime(1,1) = pbstime(posizione,1); % alpha gloabl best
+        gstime(1,2) = pbstime(posizione,2); % beta gloabl best
+        gstime(1,3) = pbstime(posizione,3); % gam gloabl best
+        gstime(1,4) = pbstime(posizione,4); % delta gloabl best
+        for i = 1:numvar
+            gx(i) = pbx(posizione,i);
+            ga(i) = pba(posizione,i);
+            gb(i) = pbb(posizione,i);
+            gc(i) = pbc(posizione,i);	
+        end
+    
+        % 5) aggiornamento velocità e posizione
+        for p = 1:P
+            for i = 1:numvar
+                vx(p,i) = w*vx(p,i) + c1*rand*(pbx(p,i)- x(p,i)) + c2*rand*(gx(i)- x(p,i));
+                va(p,i) = w*va(p,i) + c1*rand*(pba(p,i)- a(p,i)) + c2*rand*(ga(i)- a(p,i));
+                vb(p,i) = w*vb(p,i) + c1*rand*(pbb(p,i)- b(p,i)) + c2*rand*(gb(i)- b(p,i));
+                vc(p,i) = w*vc(p,i) + c1*rand*(pbc(p,i)- c(p,i)) + c2*rand*(gc(i)- c(p,i));
+                if vx(p,i) > vmaxx(i)
+                    vx(p,i) = vmaxx(i);
+                end
+
+                if va(p,i) > vmaxa(i)
+                     va(p,i) = vmaxa(i);
+                end
+
+                if vb(p,i) > vmaxb(i)
+                     vb(p,i) = vmaxb(i);
+                end
+     
+                if vc(p,i) > vmaxc(i)
+                     vc(p,i) = vmaxc(i);
+                end
+                
+                x(p,i) = x(p,i) + vx(p,i);
+
+                a(p,i) = a(p,i)+va(p,i);
+                b(p,i) = b(p,i)+vb(p,i);
+                c(p,i) = c(p,i)+vc(p,i);
+            end
+        end
+        converg(k,:) = gx(:,end); 
+
+    end
+    
+end
+
+
+
+toc
+
+
+
+plot(converg);title('Funzione di fitness del portafoglio migliore'),
+xlabel('Iterazioni'),ylabel('Funzione di fitness');
+
+vz1 = abs(sum(gx(1:end-1)) - 1); % violazione del vincolo 1 di gx
+vz2 = max(0, -(gx(1:end-1)*media' - pi)); % violazione del vincolo 2 di gx
+vz3 = sum(max(0,-gx(1:end-1)));  % violazione del vincolo 3 di gx
+vz4 = max(0,Kl-sum(ga(1:end))); % violazione del vincolo 4 di gx
+vz5 = max(0,sum(ga(1:end)-Ku)); % violazione del vincolo 5 di gx
+vz6 = sum(max(0,l(i)*ga(1:end)-gx(1:end-1))); % violaz. del vinc. 6 di gx
+vz7 = sum(max(0,gx(1:end-1)-u(i)*ga(1:end))); % violaz. del vinc. 7 di gx
+vz8 = sum(abs(ga(1:end).*(1-ga(1:end)))); % violazione del vincolo 8 di gx
+vz9 = sum(max(0,-gx(1:end-1))); %violazione del vincolo 9 di gx
+vz10 = sum(max(0,-gx(1,end-1))); %violazione del vincolo 10 di gx
+vz11 = abs((sum(float*gx(1:end-1))+sum((fix*gx(1:end-1))-delta))); 
+% violazione del vincolo 11 di gx
+
+
+gx_post = max(0,gx(1:end-1))/sum(max(0,gx(1:end-1)));
+ga_post = max(0,ga(1:end))/sum(max(0,ga(1:end)));
+gb_post = max(0,gb(1:end))/sum(max(0,gb(1:end)));
+gc_post = max(0,gc(1:end))/sum(max(0,gc(1:end)));
+
+
+vz1_post = abs(sum(gx_post) - 1); % violazione del vincolo 1 di gx_post
+vz2_post = max(0, -(gx_post*media' - pi)); % violaz. del vinc. 2 di gx_post
+vz3_post = sum(max(0,-gx_post)); % violazione del vincolo 3 di gx_post
+vz4_post = max(0,Kl-sum(ga_post)); % violazione del vincolo 4 di gx_post
+vz5_post = max(0,sum(ga_post)-Ku); % violazione del vincolo 5 di gx_post
+vz6_post = sum(max(0,l(i)*ga_post-gx_post)); % violaz.del vin. 6 di gx_post
+vz7_post = sum(max(0,gx_post-u(i)*ga_post)); % violaz. del vin.7 di gx_post
+vz8_post = sum(abs(ga_post.*(1-ga_post))); % violaz. del vin. 8 di gx_post
+vz9_post= sum(max(0,-gb_post));% violazione del vincolo 9 di gx_post
+vz10_post = sum(max(0,-gc_post)); % violazione del vincolo 10 di gx_post
+vz11_post = abs((sum(float*gx_post)+sum((fix*ga_post)-delta))); 
+% violazione del vincolo 11 di gx_post
+
+
+rend_post = rend_is*gx_post';
+stime_post = fitdist(rend_post,'Stable');
+vzs =[vz1 vz2 vz3 vz4 vz5 vz6 vz7 vz8 vz9 vz10 vz11; vz1_post vz2_post vz3_post vz4_post vz5_post vz6_post vz7_post vz8_post vz9_post vz10_post vz11_post] % constraint violations ex-ante & ex post
+
+
+opt = [gx(1,1:end-1)' gx_post']  % portafogli ottimi ex-ante & ex post
+
+
+
+% analisi out-of-sample 
+
+fatt_rend_post = 1 + rend_os*gx_post'; % rendimenti out of sample 
+eq_li = 1200*ones(length(fatt_rend_post) + 1,1); % inizializ. equity line 
+for el = 1:length(fatt_rend_post)
+    eq_li(el+1) = eq_li(el)*fatt_rend_post(el);
+end
+
+figure
+plot(eq_li)
+axis tight
+grid on
